@@ -1,216 +1,266 @@
-#include <unistd.h>
-#include <string.h>
-#include <stdlib.h>
-
 #include <sys/socket.h>
-#include <sys/types.h>
-// for structure sockaddr_in;
 #include <netinet/in.h>
 
+#include <sys/select.h>
 
-
-// delete later
+#include <string.h>
+#include <unistd.h>
+#include <stdlib.h>
 #include <stdio.h>
 
-#define MAX_CLIENTS 1024
-#define MAX_MESSAGE 4096
 
-typedef struct client {
-	int id;
-	int fd;
-} client;
+// FEW TIPS
+// main.c is given one the exam, you can copy those functions, dont need to change them. Just remember about correc error messages on socket, accept,
+// bind and listen.
+// 
+// gcc -Wall -Werror -Wextra -fsanitize=address mini_serv.c -o mini_serv
+//
+// To check open fds:
+// run the program, open new terminal and run: lsof -c mini_serv. It will show you open file descriptors.
 
-
-void _add(int fd, int *clients) {
-	for (int i = 0 ; ; i++)
-		if (clients[i] == 0) {
-			clients[i] = fd;
-			break ;
-		}
-}
-
-int _find_id(int fd, int *clients) {
-	int i;
-	for(i = 0 ; clients[i] != 0 ; i++)
-		if (clients[i] == fd)
-			break ;
-	return i;
-}
-
-// remove means to substitue with -1
-// to tez moze przyniesc problemy, bo szybko moga sie wyczerpac miejsca dla klientow
-void _remove(int fd, int *clients) {
-	for (int i = 0 ; ; i++) {
-		if (clients[i] != fd)
-			continue ;
-		close(clients[i]);
-		clients[i] = -1;
-		break ;
-	}
-}
-
-// 0 will be always "last element", so once we have reach it we know there is nothing after it
-// need to cover the case when there is only main socket left and all clients are gone;
-int _max(int *clients) {
-	int max = 3;
-	for(int i = 0 ; clients[i] != 0 ; i++) {
-		if (clients[i] > max)
-			max = clients[i];
-		printf("clients[%d]: %d\n max: %d\n\n", i, clients[i], max);
-	}
-	return max;
-}
+// nc 127.0.0.1 8000
+// net cat <ip> <port> is used to connect and talk to the server. Thyen you can open many terminals, connect few clients and send message to see if program works correctly.
+// REMEMBER!!! They will test a message that looks like this: "\n\nhello\n\nworld\n\n\", something like this:
+// client <id> joined server
+// client 0:
+// client 0:
+// client 0: hello
+// client 0:
+// client 0: world
+// client 0: 
+// If there is not \n in the input then you dont display anything!!!
+// 
+// To test it yourself prepare files and feed them to nc: nc 127.0.0.1 8000 < file.txt
 
 
-void _broadcast(int self, int *clients, char *msg) {
-	for(int i = 0 ; clients[i] != 0 ; i++) {
-		if (clients[i] == self || clients[i] == -1)
-			continue;
-		write(clients[i], msg, strlen(msg));
-	}
-}
-
-void _close(int *clients) {
-	for(int i = 0 ; clients[i] != 0 ; i++) {
-		if (clients[i] == -1)
-			continue;
-		close(clients[i]);
-	}
-}
-
-// int validate_port()
-
-
-int main(int argc, char **argv)
+int extract_message(char **buf, char **msg)
 {
-	(void)argv;
+	char	*newbuf;
+	int	i;
 
-	int main_socket;
-	int port;
-	int new_connection;
-    struct sockaddr_in define_socket, client;
+	*msg = 0;
+	if (*buf == 0)
+		return (0);
+	i = 0;
+	while ((*buf)[i])
+	{
+		if ((*buf)[i] == '\n')
+		{
+			newbuf = calloc(1, sizeof(*newbuf) * (strlen(*buf + i + 1) + 1));
+			if (newbuf == 0)
+				return (-1);
+			strcpy(newbuf, *buf + i + 1);
+			*msg = *buf;
+			(*msg)[i + 1] = 0;
+			*buf = newbuf;
+			return (1);
+		}
+		i++;
+	}
+	return (0);
+}
+
+char *str_join(char *buf, char *add)
+{
+	char	*newbuf;
+	int		len;
+
+	if (buf == 0)
+		len = 0;
+	else
+		len = strlen(buf);
+	newbuf = malloc(sizeof(*newbuf) * (len + strlen(add) + 1));
+	if (newbuf == 0)
+		return (0);
+	newbuf[0] = 0;
+	if (buf != 0)
+		strcat(newbuf, buf);
+	free(buf);
+	strcat(newbuf, add);
+	return (newbuf);
+}
+
+u_int16_t _htons(u_int16_t port) {
+    u_int16_t result = 0;
+
+    result = result | port << 8;
+    result = result | port >> 8;
+
+    return result; 
+}
 
 
-// for select
-    int clients_array[MAX_CLIENTS] = {0};
-    int nfds = 0;
-    int select_fds = 0;
-    int bytes_read = 0;
-    char buffer_read[MAX_MESSAGE + 1] = {0};
+void ft_exit(int socketfd, int *client_fd, char **extract) {
+    for (int i = 0 ; client_fd[i] != 0 ; i++) {
+        if (client_fd[i] == -1)
+            continue ;
+        close(client_fd[i]);
+        free(extract[client_fd[i]]);
+    }
+// have to also close socket file descriptor
+    close(socketfd);
+    exit (1);
+}
 
-    char buff_come_go[50];
+void add_fd(int fd, int *client) {
+    for (int i = 0 ; ; i++) {
+        if (client[i] == 0 || client[i] == -1) {
+            client[i] = fd;
+            break ;
+        }
+    }
+}
+
+void add_id(int fd, int id, int*client_fd, int *client_id) {
+    int i = 0;
+    for(; ; i++) {
+        if (client_fd[i] == fd)
+            break ;
+    }
+    client_id[i] = id;
+}
+
+void _remove(int fd_or_id, int *client_or_id) {
+    for (int i = 0 ; client_or_id[i] != 0 ; i++) {
+        if (client_or_id[i] == fd_or_id) {
+            client_or_id[i] = -1;
+            break ;
+        }
+    }
+}
+
+int max(int *client) {
+    int fd = 3;
+    for (int i = 0 ; client[i] != '\0' ; i++) {
+        if (fd > client[i])
+            continue ;
+        fd = client[i];
+    }
+    return fd;
+}
+
+void broadcast(int fd, int *client, char *msg) {
+    for (int i = 0 ; client[i] != 0 ; i++) {
+        if (client[i] == fd || client[i] == -1)
+            continue ;
+        write(client[i], msg, strlen(msg));
+    }
+}
+
+
+int main(int argc, char **argv) {
+
+// socket
+    int sockfd, connfd, len;
+	struct sockaddr_in servaddr, cli; 
+
+// select
+    fd_set readfds, copyfds;
+    int nfds;
+
+// other
+    int port;
+    int id = 0;
+    int read_bytes = 0;
+    int client_fd[65000] = {0};
+    int client_id[65000] = {0};
+
+    char _small[50] = {'\0'};
+    char _buffer[4097] = {'\0'};
+    char *_extract[65000] = { NULL };
+    char *_to_print = NULL;
+
 
     if (argc != 2) {
-		write(2, "Wrong number of arguments\n", strlen("Wrong number of arguments\n"));
-		exit(1);
+        write(2, "Wrong number of arguments\n", strlen("Wrong number of arguments\n"));
+        exit(1);
     }
-// QUESTION: do we have to check if port is valid? Can they pass "abc" as an arg or negative number or always valid number?
-	port = atoi(argv[1]);
 
-// sockets
-    if ((main_socket=socket(AF_INET, SOCK_STREAM, 0)) < 0 ) {
-    	write(2, "Fatal error socket\n", strlen("Fatal error socket\n"));
-    	exit(1);
+    port = atoi(argv[1]);
+// There is no need to check the port
+    // if (port < 0) {
+    //     write(2, "Fatal error\n", strlen("Fatal error\n"));
+    //     exit(1);
+    // }
+
+    sockfd = socket(AF_INET, SOCK_STREAM, 0); 
+	if (sockfd == -1) { 
+		write(2, "Fatal error\n", strlen("Fatal error\n"));
+        exit(1);
+	} 
+
+    bzero(&servaddr, sizeof(servaddr)); 
+
+	servaddr.sin_family = AF_INET; 
+	servaddr.sin_addr.s_addr = htonl(2130706433); // 0b00000001000000000000000001111111 - this is 127.0.0.1 in netework order
+// you dont need to write _htons, its allowed on the exam, same as htonl
+	servaddr.sin_port = _htons(port);
+
+    if ((bind(sockfd, (const struct sockaddr *)&servaddr, sizeof(servaddr))) != 0) { 
+	    write(2, "Fatal error\n", strlen("Fatal error\n"));
+        exit(1);
 	}
 
-// zero the memory	
-	memset(&define_socket, 0, sizeof(define_socket));
-
-
-	define_socket.sin_family = AF_INET;
-
-//QUESTION: how to do it without HTONL i HTONS and inet_addr(cant use them);
-	define_socket.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-	define_socket.sin_port = htons(port);
-
-// to avoid waiting for bind //
-	int opt = 1;
-	if (setsockopt(main_socket, SOL_SOCKET, SO_REUSEADDR, &opt, sizeof(opt)) < 0) {
-	    perror("setsockopt");
-	    exit(EXIT_FAILURE);
-	}
-	
-	if ( (bind(main_socket, (struct sockaddr*)&define_socket, sizeof(define_socket))) < 0) {
-		write(2, "Fatal error bind\n", strlen("Fatal error bind\n"));
-    	exit(1);
+    if (listen(sockfd, 10) != 0) {
+	    write(2, "Fatal error\n", strlen("Fatal error\n"));
+        exit(1);
 	}
 
-	if ((listen(main_socket, 10)) < 0) {
-		write(2, "Fatal error listen\n", strlen("Fatal error listen\n"));
-    	exit(1);
-	}
+// prepare select
+    FD_ZERO(&readfds);
+    FD_ZERO(&copyfds);
+    FD_SET(sockfd, &readfds);
+    nfds = sockfd;
 
-// get select ready
-	fd_set read_fds;
-	nfds = main_socket;
-	FD_ZERO(&read_fds);
-	FD_SET(main_socket, &read_fds);
-	printf("Server listening on port %d...\n", port);
-	while(1) {
-		fd_set temp = read_fds;
-		printf("nfds: %d\n", nfds);
-		select_fds = select(nfds + 1, &temp, NULL, NULL, NULL);
-		if (select_fds == -1) {
-			write(2, "Fatal error select\n", strlen("Fatal error select\n"));
-			_close(clients_array);
-    		exit(1);
-		}
-		// logic for "big socket"
-		// .determine if is new connection
-		// .broadcast to everyone new conn arrived
-		// .add it to monitored fds for select
-		// .add it to my array to know who to inform about new connection
-		if (FD_ISSET(main_socket, &temp)){
-	// narazie nie widze sensu: (main_socket, struct sockaddr *)&define_socket, (socklen_t*)&define_socket)
-			new_connection=accept(main_socket, (struct sockaddr *)&client, (socklen_t*)&define_socket);
-			if (new_connection == -1) {
-				write(2, "Fatal error new connection\n", strlen("Fatal error new connection\n"));
-				//need to free all fds,
-    			exit(1);
-			}
-			_add(new_connection, clients_array);
-			FD_SET(new_connection, &read_fds);
-			nfds = _max(clients_array);
-			// broadcast to everyone that new guy arrived
-			//buff_come_go_len = //
-			//IMPORTANT: CLIENT ID IS UNIQUE!!! its not fd - 4;
-			sprintf(buff_come_go, "server: client %d just arrived\n", _find_id(new_connection, clients_array));
-			_broadcast(new_connection, clients_array, buff_come_go);
-		}
+    while (1) {
+        copyfds = readfds;
+        if (select(nfds + 1, &copyfds, NULL, NULL, NULL) < 0)
+            ft_exit(sockfd, client_fd, _extract);
+        if (FD_ISSET(sockfd, &copyfds)) {
+            len = sizeof(cli);
+	        connfd = accept(sockfd, (struct sockaddr *)&cli, (socklen_t *)&len);
+	        if (connfd < 0)
+                ft_exit(sockfd, client_fd, _extract);
+            FD_SET(connfd, &readfds);
+        // client_fd i client_id powinny miec te same wartosci -1 i 0 natych samcych pozycjach;
+            add_fd(connfd, client_fd);
+            add_id(connfd, id, client_fd, client_id);
+            sprintf(_small, "server: client %d just arrived\n", id);
+            broadcast(connfd, client_fd, _small);
+        // id is updated here becasue its only after new client is added. 1st client has id = 0, the next will have 1 etc.
+            id += 1;
+            nfds = max(client_fd);
+        }
 
-
-
-		else {
-	// dla kazdego innego przeczytaj co on tam wyslal.
-			for (int i = 0 ; clients_array[i] != 0 ; i++) {
-				bzero(&buffer_read, sizeof(buffer_read));
-				bzero(&buff_come_go, strlen(buff_come_go));
-				if (FD_ISSET(clients_array[i], &temp)) {
-					bytes_read = read(clients_array[i], buffer_read, MAX_MESSAGE);
-					printf("buffer_read: %d\n", bytes_read);
-				}
-				else
-					continue ;
-	// usun polaczenie
-				if (bytes_read == 0) {
-					//buff_come_go_len = //
-					sprintf(buff_come_go, "server: client %d just left\n", _find_id(clients_array[i], clients_array));
-					// close(clients_array[i]); - put it in remove;
-					_broadcast(clients_array[i], clients_array, buff_come_go);
-				//clr musi byc przed _remove, bo tam nadpisuje clients_array with -1;
-					FD_CLR(clients_array[i], &read_fds);
-					_remove(clients_array[i], clients_array);
-					nfds = _max(clients_array);
-				}
-				else { // jak jest wiadomosc -> trzeba stworzyc bufer na wiadomosc malokiem chyba;
-					//buff_come_go_len = //
-					sprintf(buff_come_go, "client %d: ", _find_id(clients_array[i], clients_array));
-					_broadcast(clients_array[i], clients_array, buff_come_go);
-					_broadcast(clients_array[i], clients_array, buffer_read);
-				}
-			}
-		}	
-	}
-	printf("hey?");
-	return 0;
+        for(int i = 0 ; client_fd[i] != 0 ; i++) {
+            if (!FD_ISSET(client_fd[i], &copyfds))
+                continue ;
+            read_bytes = read(client_fd[i], &_buffer, 4096);
+            if (read_bytes == 0) {
+                FD_CLR(client_fd[i], &readfds);
+                sprintf(_small, "server: client %d just left\n", client_id[i]);
+                broadcast(client_fd[i], client_fd, _small);
+                free(_extract[client_fd[i]]);
+                _extract[client_fd[i]] = NULL;
+                close(client_fd[i]);
+        // remove must go almost the last, because if you remove client_fd and then later try to close it you will close -1, FD_CLR is not going to work
+                _remove(client_id[i], client_id);
+                _remove(client_fd[i], client_fd);
+        // nfds must go after remove because we need to find max avaliable fd. We removed one so we will check if it was not the biggest.
+                nfds = max(client_fd);
+            }
+            else {
+                _buffer[read_bytes] = '\0';
+                _extract[client_fd[i]] = str_join(_extract[client_fd[i]], _buffer);
+                while(extract_message(&_extract[client_fd[i]], &_to_print)) {
+                    sprintf(_small, "client %d: ", client_id[i]);
+                    broadcast(client_fd[i], client_fd, _small);
+                    broadcast(client_fd[i], client_fd, _to_print);
+                    free(_to_print);
+                    _to_print = NULL;
+                }
+            }
+        }
+    }
 }
+
